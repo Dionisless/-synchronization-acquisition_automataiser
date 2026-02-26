@@ -44,14 +44,22 @@ closing_detector:
   current_threshold_abs_a: 10.0
   # Number of samples current must stay above threshold (anti-noise)
   min_sustain_samples: 3
-  # Maximum plausible closing time (ms) - anything above is "stuck breaker"
-  max_closing_time_ms: 350.0
-  # Minimum plausible closing time (ms) - below is likely noise
+  # Absolute upper limit (ms): t > max → FAILED (stuck breaker, absolute criterion)
+  # Covers all real breaker types:
+  #   Vacuum:  30-80 ms  (ВВ/TEL, BB/EKF, ВАКОН, Sion)
+  #   SF6:     50-150 ms (ГВШ, HPL, LTB, GL)
+  #   Oil:     80-300 ms (МКП, ВМПЭ, ВМП-10)
+  #   Old oil with degradation: up to 800-1000 ms
+  max_closing_time_ms: 2000.0
+  # Minimum plausible closing time (ms) - below is likely detection noise
   min_closing_time_ms: 10.0
   # Window before close command to search for pre-command signals (ms)
   pre_command_window_ms: 10.0
-  # Window after close command to search for current (ms)
-  search_window_ms: 500.0
+  # Search window = same as max_closing_time (look for current up to 2 sec)
+  search_window_ms: 2000.0
+  # Second-pass group-level outlier multiplier: t > median * multiplier → OUTLIER
+  # (handles mixed-type fleets: vacuum 60 ms vs oil 200 ms on same substation)
+  stuck_median_multiplier: 1.5
   # Channel name patterns (case-insensitive regex)
   close_command_patterns:
     - "clos"

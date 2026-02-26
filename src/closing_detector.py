@@ -9,12 +9,18 @@ Strategy (tried in order):
   3. Current rise from start of record (reference = trigger time)
 
 Edge cases handled:
-  - Stuck breaker: no current detected within search window → quality=FAILED
+  - Stuck breaker: no current within 2000 ms OR t > 1.5 × group_median → FAILED / OUTLIER
+  - Supports oil breakers (up to ~1000 ms), SF6 (50-150 ms), vacuum (30-80 ms)
   - CT noise: current must exceed threshold for N consecutive samples
   - Pre-existing current (breaker already closed at trigger): quality=AMBIGUOUS
   - Multiple current rises (contact bounce): use first sustained rise
   - No command signal: fall back to record start as reference
   - Outliers flagged but not discarded; quality scoring communicates confidence
+
+Two-pass outlier reclassification (group-level):
+  Use reclassify_group_outliers() after grouping to apply the adaptive
+  t > median * 1.5 criterion, which correctly handles both fast vacuum breakers
+  and slow oil breakers within the same dataset.
 """
 
 import logging
@@ -178,9 +184,12 @@ def detect_closing_time(
     current_frac = det.get("current_threshold_fraction", 0.05)
     current_abs = det.get("current_threshold_abs_a", 10.0)
     min_sustain = det.get("min_sustain_samples", 3)
-    max_ms = det.get("max_closing_time_ms", 350.0)
+    # Absolute upper bound: 2000 ms covers even sluggish oil breakers
+    # (vacuum: 30-80 ms, SF6: 50-150 ms, oil: 80-300 ms, old oil w/ degradation: up to ~800 ms)
+    max_ms = det.get("max_closing_time_ms", 2000.0)
     min_ms = det.get("min_closing_time_ms", 10.0)
-    search_ms = det.get("search_window_ms", 500.0)
+    # Search window = max_ms to find current within the absolute limit
+    search_ms = det.get("search_window_ms", 2000.0)
 
     ts = rec.timestamps                # seconds
     dt = float(ts[1] - ts[0]) if len(ts) > 1 else (1.0 / rec.sampling_rate)
@@ -258,6 +267,8 @@ def detect_closing_time(
     t_close_ms = (t_current_s - t_cmd_s) * 1000.0
 
     # ── Quality assessment ────────────────────────────────────────────────
+    # Note: t > median*1.5 outlier check is done at group level in
+    # reclassify_group_outliers() because median requires the full group context.
     note = ""
     if using_record_start:
         quality = DetectionQuality.ESTIMATED
@@ -269,8 +280,9 @@ def detect_closing_time(
         quality = DetectionQuality.OUTLIER
         note = f"T_close={t_close_ms:.1f} ms < minimum {min_ms} ms (noise?)"
     elif t_close_ms > max_ms:
-        quality = DetectionQuality.OUTLIER
-        note = f"T_close={t_close_ms:.1f} ms > maximum {max_ms} ms (stuck?)"
+        # Absolute physical limit exceeded: stuck breaker
+        quality = DetectionQuality.FAILED
+        note = f"T_close={t_close_ms:.1f} ms > absolute limit {max_ms} ms — stuck breaker"
     else:
         quality = DetectionQuality.GOOD
 
@@ -284,6 +296,75 @@ def detect_closing_time(
         current_threshold_a=threshold_a,
         note=note,
     )
+
+
+def reclassify_group_outliers(
+    results: list[ClosingResult],
+    stuck_median_multiplier: float = 1.5,
+) -> list[ClosingResult]:
+    """
+    Second-pass outlier reclassification using group-level statistics.
+
+    Applies the rule: OUTLIER if t_close > median(group) * stuck_median_multiplier
+
+    This correctly handles mixed-type datasets (vacuum + oil breakers) by using
+    a relative threshold rather than an absolute one.
+
+    Two conditions for OUTLIER/FAILED (OR logic as requested):
+      - t_close > 2000 ms   → already caught as FAILED in first pass
+      - t_close > median × 1.5 → caught here at group level
+
+    Args:
+        results:                  List of ClosingResult from detect_closing_time().
+        stuck_median_multiplier:  Multiplier for adaptive threshold (default 1.5).
+
+    Returns:
+        New list with potentially reclassified quality labels.
+        Original objects are not mutated.
+    """
+    # Compute group median from GOOD + ESTIMATED measurements only
+    valid_times = [
+        r.t_close_ms for r in results
+        if r.t_close_ms is not None
+        and r.quality in (DetectionQuality.GOOD, DetectionQuality.ESTIMATED)
+    ]
+    if len(valid_times) < 3:
+        return results  # insufficient data for adaptive threshold
+
+    group_median = float(np.median(valid_times))
+    adaptive_limit = group_median * stuck_median_multiplier
+
+    reclassified: list[ClosingResult] = []
+    for r in results:
+        if (
+            r.t_close_ms is not None
+            and r.quality in (DetectionQuality.GOOD, DetectionQuality.ESTIMATED)
+            and r.t_close_ms > adaptive_limit
+        ):
+            # Re-create dataclass with updated fields (dataclasses are mutable)
+            import dataclasses
+            new_r = dataclasses.replace(
+                r,
+                quality=DetectionQuality.OUTLIER,
+                note=(
+                    f"Adaptive outlier: T_close={r.t_close_ms:.1f} ms > "
+                    f"{stuck_median_multiplier:.1f}×median ({group_median:.1f} ms)"
+                ),
+            )
+            reclassified.append(new_r)
+        else:
+            reclassified.append(r)
+
+    n_reclassified = sum(
+        1 for old, new in zip(results, reclassified)
+        if old.quality != new.quality
+    )
+    if n_reclassified:
+        logger.debug(
+            f"Reclassified {n_reclassified} records as OUTLIER "
+            f"(adaptive limit: {adaptive_limit:.1f} ms = {stuck_median_multiplier}×{group_median:.1f} ms)"
+        )
+    return reclassified
 
 
 def _default_cfg() -> dict:

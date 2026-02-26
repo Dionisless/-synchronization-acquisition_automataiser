@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.download import download_annotated, find_comtrade_pairs, load_config
 from src.comtrade_parser import parse_comtrade, batch_parse
 from src.cb_grouper import group_by_breaker, summary_dataframe
-from src.closing_detector import detect_closing_time, DetectionQuality
+from src.closing_detector import detect_closing_time, DetectionQuality, reclassify_group_outliers
 from src.models import build_models
 from src.evaluation import (
     evaluate_all,
@@ -113,12 +113,19 @@ def main():
     groups_data: dict[str, tuple[list[float], list]] = {}
     all_detection_rows = []
 
+    stuck_multiplier = cfg.get("closing_detector", {}).get("stuck_median_multiplier", 1.5)
+
     for fp, grp in groups.items():
-        det_results = []
-        times_ms = []
+        det_results_raw = []
         for rec in grp.records:
             res = detect_closing_time(rec, cfg)
-            det_results.append(res)
+            det_results_raw.append(res)
+
+        # Second pass: reclassify adaptive outliers (t > median * 1.5)
+        det_results = reclassify_group_outliers(det_results_raw, stuck_multiplier)
+
+        times_ms = []
+        for rec, res in zip(grp.records, det_results):
             t = res.t_close_ms
             times_ms.append(t if t is not None else float("nan"))
 
