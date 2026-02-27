@@ -1,0 +1,124 @@
+dataset:
+  figshare_article_id: 28465427
+  figshare_base_url: "https://ndownloader.figshare.com/files/"
+  data_dir: "data/raw"
+  # Annotated archives (smaller, prioritized for analysis)
+  annotated_archives:
+    - file_id: 56279351
+      name: "916hz_sampling.7z"
+      size_kb: 5.8
+    - file_id: 56279357
+      name: "4000hz_sampling.7z"
+      size_kb: 35.8
+    - file_id: 56279360
+      name: "2400hz_sampling.7z"
+      size_kb: 1510
+    - file_id: 56279363
+      name: "2100hz_sampling.7z"
+      size_kb: 24.7
+    - file_id: 56279369
+      name: "2000hz_sampling.7z"
+      size_kb: 329
+    - file_id: 56279366
+      name: "600hz_sampling.7z"
+      size_kb: 6070
+    - file_id: 56279372
+      name: "4800hz_sampling.7z"
+      size_kb: 5660
+    - file_id: 56279375
+      name: "800hz_sampling.7z"
+      size_kb: 584
+  # Large unlabeled archives (optional)
+  unlabeled_archives:
+    - file_id: 56314379
+      name: "unlabeled_50_1600.7z"
+      size_gb: 2.57
+    - file_id: 56314376
+      name: "unlabeled_50_1200.7z"
+      size_gb: 2.26
+
+closing_detector:
+  # Threshold for current detection (fraction of file maximum)
+  current_threshold_fraction: 0.05
+  # Absolute fallback threshold (amperes, primary side)
+  current_threshold_abs_a: 10.0
+  # Number of samples current must stay above threshold (anti-noise)
+  min_sustain_samples: 3
+  # Absolute upper limit (ms): t > max → FAILED (stuck breaker, absolute criterion)
+  # Covers all real breaker types:
+  #   Vacuum:  30-80 ms  (ВВ/TEL, BB/EKF, ВАКОН, Sion)
+  #   SF6:     50-150 ms (ГВШ, HPL, LTB, GL)
+  #   Oil:     80-300 ms (МКП, ВМПЭ, ВМП-10)
+  #   Old oil with degradation: up to 800-1000 ms
+  max_closing_time_ms: 2000.0
+  # Minimum plausible closing time (ms) - below is likely detection noise
+  min_closing_time_ms: 10.0
+  # Window before close command to search for pre-command signals (ms)
+  pre_command_window_ms: 10.0
+  # Search window = same as max_closing_time (look for current up to 2 sec)
+  search_window_ms: 2000.0
+  # Second-pass group-level outlier multiplier: t > median * multiplier → OUTLIER
+  # (handles mixed-type fleets: vacuum 60 ms vs oil 200 ms on same substation)
+  stuck_median_multiplier: 1.5
+  # Channel name patterns (case-insensitive regex)
+  close_command_patterns:
+    - "clos"
+    - "kv"
+    - "кв"
+    - "52c"
+    - "vcmd"
+    - "cmd"
+    - "comm"
+    - "на вкл"
+    - "вкл"
+  breaker_position_patterns:
+    - "52a"
+    - "52b"
+    - "pv"
+    - "пв"
+    - "posit"
+    - "положен"
+  current_channel_patterns:
+    - "^i[abc]$"
+    - "^i[abc]_"
+    - "^ia$|^ib$|^ic$"
+    - "ток"
+    - "current"
+  current_channel_units:
+    - "a"
+    - "ka"
+    - "ma"
+
+outlier_detection:
+  # IQR multiplier for outlier detection
+  iqr_multiplier: 2.0
+  # Minimum samples before outlier detection activates
+  min_samples_for_detection: 5
+  # Maximum fraction of outliers allowed in a window
+  max_outlier_fraction: 0.3
+
+models:
+  # Rolling median window
+  median_window: 10
+  # EWMA smoothing factor (0 < alpha < 1, higher = more responsive)
+  ewma_alpha: 0.25
+  # Kalman filter parameters
+  kalman:
+    # Process noise std for closing time state (ms per operation)
+    process_noise_time_ms: 0.3
+    # Process noise std for drift state (ms per operation)
+    process_noise_drift_ms: 0.05
+    # Measurement noise std (ms) - reflects detection algorithm uncertainty
+    measurement_noise_ms: 2.0
+    # Initial state uncertainty (ms)
+    initial_uncertainty_ms: 10.0
+  # Theil-Sen regression window (number of recent observations)
+  regression_window: 20
+
+evaluation:
+  # Train/test split ratio
+  train_fraction: 0.7
+  # Minimum number of operations per CB for evaluation
+  min_operations: 10
+  # Random seed for reproducibility
+  random_seed: 42
